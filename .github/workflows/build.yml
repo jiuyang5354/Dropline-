@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        shell: pwsh
+        run: dotnet build windows/Dropline.csproj -c Release -o windows/bin
+      - name: Package
+        id: pkg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'dev-' + $env:GITHUB_SHA.Substring(0,7) }
+          $stage = Join-Path $env:RUNNER_TEMP 'Dropline'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item windows/bin/Dropline.exe, windows/bin/Dropline.exe.config -Destination $stage
+          Copy-Item LICENSE, README.md -Destination $stage
+          $zip = "Dropline-Windows-$version.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+          (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + '  ' + $zip | Set-Content SHA256SUMS.txt -Encoding ascii
+          "zip=$zip" | Add-Content $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dropline-Windows
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            SHA256SUMS.txt
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME '${{ steps.pkg.outputs.zip }}' SHA256SUMS.txt --title "Dropline $env:GITHUB_REF_NAME" --notes "首个预览版：拖拽暂存架、多文件叠放、图片/文字/链接剪藏、Ctrl+Alt+D、托盘与开机自启。灵感来自 Mac 应用 Yoink，独立实现，与其无关联。" --prerelease
