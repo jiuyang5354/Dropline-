@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
+using System.Threading;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -28,6 +29,8 @@ namespace Dropline
         private const double TabWidth = 22;
         private const double TileSize = 104;
         private const double Margin_ = 10;
+        private const double HintHeight = 48;
+        private const double CellHeight = 54;
 
         private static readonly Brush Paper = Frozen(Color.FromArgb(0xF2, 0xF6, 0xF4, 0xEF));
         private static readonly Brush Ink = Frozen(Color.FromRgb(0x16, 0x16, 0x14));
@@ -52,6 +55,21 @@ namespace Dropline
         private bool dragOver;
         private Point pressPoint;
         private ShelfItem pressedItem;
+        private bool droppedOnAction;
+        private int busy;
+        private readonly Dictionary<DropAction, ActionCell> cells = new Dictionary<DropAction, ActionCell>();
+        private readonly string prefsFile;
+        private string convertFormat = "jpg";
+        private string renamePattern = "{name}-{n}";
+
+        private sealed class ActionCell
+        {
+            public Border Box;
+            public TextBlock Label;
+            public TextBlock Sub;
+            public string Idle;
+            public DispatcherTimer Reset;
+        }
 
         public bool KeepAfterDragOut { get; set; }
         public IntPtr Handle { get; private set; }
@@ -107,15 +125,15 @@ namespace Dropline
 
             dropHint = new Border
             {
-                Height = 96,
-                Margin = new Thickness(Margin_, 2, Margin_, Margin_),
+                Height = HintHeight,
+                Margin = new Thickness(Margin_, 2, Margin_, 6),
                 CornerRadius = new CornerRadius(10),
                 BorderBrush = Hairline,
                 BorderThickness = new Thickness(1.2),
                 Background = Brushes.Transparent,
                 Child = new TextBlock
                 {
-                    Text = "拖到这里\n暂存",
+                    Text = "拖到这里暂存",
                     TextAlignment = TextAlignment.Center,
                     FontFamily = Sans,
                     FontSize = 12,
@@ -128,10 +146,16 @@ namespace Dropline
             tiles = new StackPanel { Margin = new Thickness(Margin_, 0, Margin_, 4) };
             scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Content = tiles };
 
+            prefsFile = System.IO.Path.Combine(store.Root, "actions.ini");
+            LoadPrefs();
+            var actions = BuildActions();
+
             var body = new DockPanel();
             DockPanel.SetDock(header, Dock.Top);
+            DockPanel.SetDock(actions, Dock.Bottom);
             DockPanel.SetDock(dropHint, Dock.Bottom);
             body.Children.Add(header);
+            body.Children.Add(actions);
             body.Children.Add(dropHint);
             body.Children.Add(scroller);
 
@@ -241,7 +265,7 @@ namespace Dropline
         {
             int count = store.Items.Count;
             double header = 38;
-            double hint = 96 + Margin_ + 2;
+            double hint = HintHeight + 8 + 2 * (CellHeight + 6) + Margin_;
             double list = count * (TileSize + 34);
             return Math.Max(header + hint + 8, header + list + hint + 8);
         }
@@ -370,6 +394,18 @@ namespace Dropline
                     store.Save();
                 }));
             }
+            var process = new MenuItem { Header = "处理" };
+            process.Items.Add(MenuItem("压缩图片", delegate { RunAction(DropAction.Compress, item.Paths.ToList()); }));
+            foreach (string f in new[] { "png", "jpg", "webp" })
+            {
+                string format = f;
+                var mi = MenuItem("转为 " + format.ToUpperInvariant(), delegate { RunAction(DropAction.Convert, item.Paths.ToList(), format); });
+                if (format == "webp" && !Processor.CanWriteWebp) mi.IsEnabled = false;
+                process.Items.Add(mi);
+            }
+            process.Items.Add(MenuItem("批量重命名…", delegate { RunAction(DropAction.Rename, item.Paths.ToList()); }));
+            process.Items.Add(MenuItem("打包 zip", delegate { RunAction(DropAction.Zip, item.Paths.ToList()); }));
+            menu.Items.Add(process);
             menu.Items.Add(new Separator());
             menu.Items.Add(MenuItem("移出暂存架", delegate { store.Remove(item); }));
             menu.Opened += delegate { collapseTimer.Stop(); };
@@ -397,6 +433,7 @@ namespace Dropline
             }
 
             draggingOut = true;
+            droppedOnAction = false;
             DragDropEffects result;
             try
             {
@@ -407,7 +444,7 @@ namespace Dropline
                 draggingOut = false;
             }
 
-            if (result == DragDropEffects.None) { collapseTimer.Start(); return; }
+            if (result == DragDropEffects.None || droppedOnAction) { droppedOnAction = false; collapseTimer.Start(); return; }
             item.PruneMissing();
             if (!KeepAfterDragOut || item.Paths.Count == 0) store.Remove(item);
             else store.Save();
@@ -484,6 +521,183 @@ namespace Dropline
             }
             e.Handled = true;
             collapseTimer.Start();
+        }
+
+        // ---------- drop-to-process actions ----------
+        private FrameworkElement BuildActions()
+        {
+            var grid = new Grid { Margin = new Thickness(Margin_ - 3, 0, Margin_ - 3, Margin_) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.RowDefinitions.Add(new RowDefinition());
+            grid.RowDefinitions.Add(new RowDefinition());
+            AddCell(grid, DropAction.Compress, "压缩", "图片变小", 0, 0, "拖入图片：缩到长边 2560，照片转 JPG 80%，透明图保留 PNG");
+            AddCell(grid, DropAction.Convert, "转格式", "→ " + convertFormat.ToUpperInvariant(), 0, 1, "拖入图片转换格式；单击切换 PNG / JPG / WebP");
+            AddCell(grid, DropAction.Rename, "重命名", "批量编号", 1, 0, "拖入文件，按规则生成改名后的副本");
+            AddCell(grid, DropAction.Zip, "打包", "zip", 1, 1, "拖入文件或文件夹，打成一个 zip");
+            return grid;
+        }
+
+        private void AddCell(Grid grid, DropAction action, string label, string sub, int row, int col, string tip)
+        {
+            var labelText = new TextBlock { Text = label, FontFamily = Sans, FontSize = 12, Foreground = Ink, HorizontalAlignment = HorizontalAlignment.Center };
+            var subText = new TextBlock { Text = sub, FontFamily = Mono, FontSize = 9.5, Foreground = Muted, HorizontalAlignment = HorizontalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 2, 2, 0) };
+            var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            stack.Children.Add(labelText);
+            stack.Children.Add(subText);
+            var box = new Border
+            {
+                Height = CellHeight,
+                Margin = new Thickness(3),
+                CornerRadius = new CornerRadius(9),
+                BorderBrush = Hairline,
+                BorderThickness = new Thickness(1),
+                Background = Brushes.Transparent,
+                AllowDrop = true,
+                Child = stack,
+                ToolTip = tip,
+                Cursor = action == DropAction.Convert ? Cursors.Hand : Cursors.Arrow
+            };
+            Grid.SetRow(box, row);
+            Grid.SetColumn(box, col);
+            grid.Children.Add(box);
+
+            var cell = new ActionCell { Box = box, Label = labelText, Sub = subText, Idle = sub };
+            cell.Reset = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+            cell.Reset.Tick += delegate { cell.Reset.Stop(); SetCellText(action, null); };
+            cells[action] = cell;
+
+            box.DragEnter += (s, e) => { CellDragEffect(e); if (e.Effects != DragDropEffects.None) { box.BorderBrush = Accent; box.Background = Hairline; } };
+            box.DragOver += (s, e) => CellDragEffect(e);
+            box.DragLeave += (s, e) => { box.BorderBrush = Hairline; box.Background = Brushes.Transparent; e.Handled = true; };
+            box.Drop += (s, e) =>
+            {
+                box.BorderBrush = Hairline;
+                box.Background = Brushes.Transparent;
+                dragOver = false;
+                dropHint.BorderBrush = Hairline;
+                e.Handled = true;
+                var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (files == null || files.Length == 0) return;
+                if (draggingOut) droppedOnAction = true;
+                e.Effects = DragDropEffects.Copy;
+                var list = files.ToList();
+                Dispatcher.BeginInvoke(new Action(() => RunAction(action, list)));
+            };
+            if (action == DropAction.Convert)
+            {
+                box.MouseLeftButtonUp += delegate
+                {
+                    var order = Processor.CanWriteWebp ? new[] { "png", "jpg", "webp" } : new[] { "png", "jpg" };
+                    int i = Array.IndexOf(order, convertFormat);
+                    convertFormat = order[(i + 1) % order.Length];
+                    cell.Idle = "→ " + convertFormat.ToUpperInvariant();
+                    if (!cell.Reset.IsEnabled && busy == 0) SetCellText(action, null);
+                    SavePrefs();
+                };
+            }
+        }
+
+        private void CellDragEffect(DragEventArgs e)
+        {
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void SetCellText(DropAction action, string text)
+        {
+            ActionCell cell = cells[action];
+            cell.Sub.Text = text ?? cell.Idle;
+            cell.Sub.Foreground = text == null ? Muted : Accent;
+        }
+
+        private void RunAction(DropAction action, List<string> paths, string format = null)
+        {
+            if (paths.Count == 0) return;
+            string pattern = renamePattern;
+            int start = 1;
+            if (action == DropAction.Rename)
+            {
+                collapseTimer.Stop();
+                var dialog = new RenameDialog(paths, renamePattern);
+                bool? ok = dialog.ShowDialog();
+                collapseTimer.Start();
+                if (ok != true) return;
+                renamePattern = pattern = dialog.Pattern;
+                start = dialog.StartNumber;
+                SavePrefs();
+            }
+            string fmt = format ?? convertFormat;
+            string root = store.Root;
+            ActionCell cell = cells[action];
+            cell.Reset.Stop();
+            SetCellText(action, "处理中…");
+            busy++;
+
+            // WPF imaging (flattening, scaling) needs an STA thread of its own.
+            var worker = new Thread(() =>
+            {
+                ProcessResult r;
+                try
+                {
+                    switch (action)
+                    {
+                        case DropAction.Compress: r = Processor.Compress(root, paths); break;
+                        case DropAction.Convert: r = Processor.Convert(root, paths, fmt); break;
+                        case DropAction.Rename: r = Processor.Rename(root, paths, pattern, start); break;
+                        default: r = Processor.Zip(root, paths); break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    r = new ProcessResult { Error = ex.Message };
+                }
+                Dispatcher.BeginInvoke(new Action(() => FinishAction(action, r)));
+            });
+            worker.SetApartmentState(ApartmentState.STA);
+            worker.IsBackground = true;
+            worker.Start();
+        }
+
+        private void FinishAction(DropAction action, ProcessResult r)
+        {
+            busy--;
+            ActionCell cell = cells[action];
+            if (r.Outputs.Count > 0) store.Add(r.Outputs);
+            string text = r.Error ?? r.Summary ?? "完成";
+            if (r.Error == null && r.Skipped.Count > 0) text += " · 跳过 " + r.Skipped.Count;
+            SetCellText(action, text);
+            cell.Box.ToolTip = r.Outputs.Count > 0 ? "已生成副本，原文件未改动：\n" + System.IO.Path.GetDirectoryName(r.Outputs[0]) : (string)cell.Box.ToolTip;
+            cell.Reset.Start();
+            if (state != ShelfState.Open) SetState(ShelfState.Open);
+            collapseTimer.Stop();
+            collapseTimer.Start();
+        }
+
+        private void LoadPrefs()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(prefsFile)) return;
+                foreach (string line in System.IO.File.ReadAllLines(prefsFile, System.Text.Encoding.UTF8))
+                {
+                    string[] kv = line.Split(new[] { '=' }, 2);
+                    if (kv.Length != 2) continue;
+                    if (kv[0] == "ConvertFormat" && new[] { "png", "jpg", "webp" }.Contains(kv[1])) convertFormat = kv[1];
+                    else if (kv[0] == "RenamePattern" && kv[1].Length > 0) renamePattern = kv[1];
+                }
+                if (convertFormat == "webp" && !Processor.CanWriteWebp) convertFormat = "jpg";
+            }
+            catch { }
+        }
+
+        private void SavePrefs()
+        {
+            try
+            {
+                System.IO.File.WriteAllLines(prefsFile, new[] { "ConvertFormat=" + convertFormat, "RenamePattern=" + renamePattern }, System.Text.Encoding.UTF8);
+            }
+            catch { }
         }
 
         private static void Open(ShelfItem item)

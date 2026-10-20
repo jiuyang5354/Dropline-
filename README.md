@@ -1,13 +1,26 @@
 # Dropline
 
-Windows 上的拖拽暂存架。拖动文件时，屏幕右侧会弹出一个暂存架：先把文件放上去，切换窗口、桌面或应用之后，再从架子上把文件拖到目的地。
+Windows 上的拖拽暂存架，拖进去就处理。拖动文件时，屏幕右侧会弹出一个暂存架：把文件拖到底部的动作格上，就能压缩图片、转换格式、批量重命名或打包 zip，处理好的副本直接从架子上拖走。
 
-A drag-and-drop shelf for Windows. Start dragging a file and a shelf slides out at the right edge of the screen. Park files there, switch windows, then drag them back out wherever they need to go.
+A drag-and-drop shelf for Windows that processes files on drop. Drag a file onto one of the shelf's action cells to compress images, convert between PNG / JPG / WebP, batch-rename, or zip, then drag the results straight out.
 
 > 灵感来自 Mac 应用 [Yoink](https://eternalstorms.at/yoink/mac/)（Eternal Storms Software）。Dropline 是独立实现的开源项目，与 Yoink 及其作者没有任何关联，也没有使用其代码或素材。
 > Inspired by Yoink for Mac by Eternal Storms Software. Dropline is an independent, open-source implementation and is not affiliated with Yoink or its developer.
 
-## 功能 (v0.1)
+## 拖进去就处理 (v0.2)
+
+暂存架底部有四个动作格。把文件拖到上面（来自桌面、资源管理器，或架子上已有的项目），处理结果会作为新的一叠出现在架子顶部：
+
+| 动作 | 做什么 |
+|---|---|
+| **压缩** | 图片长边缩到 2560 以内；照片转 JPG 80%，透明图保留 PNG，WebP 仍为 WebP；压完更大就给回原图 |
+| **转格式** | 转成 PNG / JPG / WebP，单击动作格切换目标格式；转 JPG 时透明部分铺白底 |
+| **重命名** | 按规则生成改名副本：`{n}` 序号、`{name}` 原名、`{date}` 日期，可设起始序号，带预览 |
+| **打包** | 文件、文件夹打成一个 zip（UTF-8 文件名，中文不乱码） |
+
+所有动作只生成副本，原文件不改动；输出在 `%AppData%\Dropline\output`。右键架子上的项目，也能从“处理”菜单使用这些动作。
+
+## 暂存架 (v0.1)
 
 - **拖动即出现**：从资源管理器或桌面开始拖动文件时，暂存架会自动从屏幕右侧滑出（可在托盘菜单里改成在任何应用中拖动都弹出）
 - **放入 / 拖出**：放到暂存架上的文件只记录位置、不复制；拖出时就是真实的文件拖放，可以放进任何文件夹、聊天窗口、浏览器上传框或其他应用
@@ -35,6 +48,10 @@ dotnet build -c Release
 - Windows 没有公开的“开始拖动文件”系统事件，自动弹出依靠全局鼠标钩子判断（按下后移动超过 10 像素，且不是在标题栏上拖动窗口）。
 - 以管理员身份运行的窗口无法与普通权限的 Dropline 互相拖放，这是 Windows 的权限隔离机制（UIPI）。
 - 目前只停靠在主显示器右侧。
+
+## 第三方组件
+
+WebP 编解码使用 Google [libwebp](https://chromium.googlesource.com/webm/libwebp) 的 `cwebp.exe` / `dwebp.exe`（BSD 许可），由构建流程从官方发布包下载并随压缩包附带。
 
 ## License
 

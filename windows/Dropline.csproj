@@ -14,6 +14,10 @@
     <ApplicationIcon>Dropline.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+  <ItemGroup>
     <EmbeddedResource Include="Dropline.ico" LogicalName="Dropline.ico" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>

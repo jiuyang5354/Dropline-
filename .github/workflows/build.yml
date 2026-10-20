@@ -22,6 +22,28 @@ jobs:
       - name: Build
         shell: pwsh
         run: dotnet build windows/Dropline.csproj -c Release -o windows/bin
+      - name: Fetch WebP tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tools = Join-Path $env:RUNNER_TEMP 'webp'
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          $ok = $false
+          foreach ($v in '1.5.0', '1.4.0') {
+            try {
+              $zip = Join-Path $tools "libwebp-$v.zip"
+              Invoke-WebRequest "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$v-windows-x64.zip" -OutFile $zip
+              Expand-Archive $zip -DestinationPath $tools -Force
+              $ok = $true; break
+            } catch { Write-Host "libwebp $v unavailable: $_" }
+          }
+          if (-not $ok) { throw 'Could not download libwebp' }
+          foreach ($exe in 'cwebp.exe', 'dwebp.exe') {
+            $f = Get-ChildItem $tools -Recurse -Filter $exe | Select-Object -First 1
+            if (-not $f) { throw "$exe not found in libwebp archive" }
+            Copy-Item $f.FullName windows/bin/
+          }
+          Get-ChildItem $tools -Recurse -Filter COPYING | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName windows/bin/libwebp-COPYING.txt }
       - name: Package
         id: pkg
         shell: pwsh
@@ -30,7 +52,8 @@ jobs:
           $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'dev-' + $env:GITHUB_SHA.Substring(0,7) }
           $stage = Join-Path $env:RUNNER_TEMP 'Dropline'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item windows/bin/Dropline.exe, windows/bin/Dropline.exe.config -Destination $stage
+          Copy-Item windows/bin/Dropline.exe, windows/bin/Dropline.exe.config, windows/bin/cwebp.exe, windows/bin/dwebp.exe -Destination $stage
+          if (Test-Path windows/bin/libwebp-COPYING.txt) { Copy-Item windows/bin/libwebp-COPYING.txt -Destination $stage }
           Copy-Item LICENSE, README.md -Destination $stage
           $zip = "Dropline-Windows-$version.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
@@ -48,4 +71,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create $env:GITHUB_REF_NAME '${{ steps.pkg.outputs.zip }}' SHA256SUMS.txt --title "Dropline $env:GITHUB_REF_NAME" --notes "首个预览版：拖拽暂存架、多文件叠放、图片/文字/链接剪藏、Ctrl+Alt+D、托盘与开机自启。灵感来自 Mac 应用 Yoink，独立实现，与其无关联。" --prerelease
+          gh release create $env:GITHUB_REF_NAME '${{ steps.pkg.outputs.zip }}' SHA256SUMS.txt --title "Dropline $env:GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md --prerelease
